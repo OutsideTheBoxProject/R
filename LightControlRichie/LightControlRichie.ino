@@ -1,3 +1,12 @@
+/* ----------- hardware --------------*/
+
+// Yun 2 (SDA) <-> MPU (SDA)
+// Yun 3 (SCL) <-> MPU (SCL)
+// Yun 10 (TX) <-> RFID (RX) 
+// Yun 11 (RX) <-> RFID (TX)
+
+// NOTE: The Yun is similar to the Leonardo and not every digital Pin can be a RX (10 and 11 can)
+// RFID Reader in UART Mode (Jumper to U)
 
 /* ----------- includes --------------*/
 
@@ -5,7 +14,6 @@
 #include <TimerOne.h>
 #include <MPU9250.h>
 #include <quaternionFilters.h>
-#include <SeeedRFIDLib.h>
 #include <SoftwareSerial.h> 
 
 
@@ -37,24 +45,23 @@
 #define BRIGHTMAX 254
 #define BRIGHTMIN 0
 
-#define INTERVALL 4000
+#define INTERVALL 2000
 
+// MPU
 #define AHRS false         // Set to false for basic data read
 #define SerialDebug true  // Set to true to get Serial output for debugging
 #define ADDRESS 0x71
 #define ALTADDRESS 0xFF
 
-#define MASTERCODE 10976553
-#define RFID_RX_PIN 12
-#define RFID_TX_PIN 13
+// RFID
+#define RFID_RX_PIN 11
+#define RFID_TX_PIN 10
 
+// Debug messages
 #define DEBUG 1
-#define TEST
 
 /* ----------- global variables --------------*/
 //lights
-const int buttonPin = 4;
-int buttonState = 0;
 bool lightON = 1;
 Process p;
 int brightness = 254;
@@ -65,7 +72,6 @@ const int sampleWindow = 250;
 unsigned int knock; 
 
 //MPU
-int intPin = 5;  // These can be changed, 2 and 3 are the Arduinos ext int pins
 MPU9250 sensor;
 int sampling = 1000; // measure every .1 seconds
 int lastMillis = 0;
@@ -74,8 +80,9 @@ float previous[3] = {0.0, 0.0, 0.0};
 int prevColour = 0;
 
 //RFID
-SeeedRFIDLib RFID(WIEGAND_26BIT); 
-RFIDTag tag;
+SoftwareSerial SoftSerial(RFID_RX_PIN, RFID_TX_PIN);
+unsigned char buffer[64];       // buffer array for data receive over serial port
+int count = 0;  
 
 void play_travel();
 
@@ -87,13 +94,12 @@ void setup() {
   Serial.println("Starting up... Initialising Bridge.");
   Bridge.begin();   // Initialize the Bridge
   Serial.println("Bridge initialised.");
-  //pinMode(intPin, INPUT);
-  //digitalWrite(intPin, LOW);
   
   Wire.begin();
   Serial.println("Wire initialised.");
 
   byte c = sensor.readByte(MPU9250_ADDRESS, WHO_AM_I_MPU9250);
+  Serial.println("...");
   Serial.print("MPU9250 "); Serial.print("I AM "); Serial.print(c, HEX);
   Serial.print(" I should be "); Serial.println(ADDRESS, HEX);
 
@@ -112,31 +118,41 @@ void setup() {
     Serial.println(c, HEX);
     while(1) ; // Loop forever if communication doesn't happen
   }
-  
+
+  // Serial for RFID
+  SoftSerial.begin(9600);
+
   Serial.println("Ready to go!");
 }
 
 void loop() {
-  //RFIDLoop();
+  RFIDLoop();
   gyroLoop();
   microphoneLoop();
-
-  buttonState = digitalRead(buttonPin);
-
-  if ( buttonState == HIGH ) {
-    Serial.println("Button pressed");
-    playTravel();
-  }
 }
 
-void RFIDLoop(){
-  if(RFID.isIdAvailable()) {
-        tag = RFID.readId();
-        // In Wiegand Mode, we only get the card code
-        Serial.print("CC = ");
-        Serial.println(tag.id); 
-   }
+void RFIDLoop() {
+    // if date is coming from software serial port ==> data is coming from SoftSerial shield
+    if (SoftSerial.available()) {
+      while(SoftSerial.available()) {              // reading data into char array
+        buffer[count++] = SoftSerial.read();      // writing data into array
+        if(count == 64)break;
+      }
+      playTravel();                   // we could check which tag? 
+      if (DEBUG) Serial.write(buffer, count);     // if no data transmission ends, write buffer to hardware serial port
+      clearBufferArray();             // call clearBufferArray function to clear the stored data from the array
+      count = 0;                      // set counter of while loop to zero
+    }
 }
+void clearBufferArray()                 // function to clear buffer array
+{
+    // clear all index of array with command NULL
+    for (int i=0; i<count; i++)
+    {
+        buffer[i]=NULL;
+    }                  
+}
+
 
 void playTravel() {
   Serial.println("Starting light show");
@@ -161,10 +177,7 @@ void playTravel() {
   placeColourCommand(PINK, 1, INTERVALL);
   placeColourCommand(PURPLE, 1, INTERVALL);
   placeColourCommand(BLUE, 1, INTERVALL);
-  if (DEBUG){
-    placeCommand(OFF, 0);
-    lightON = 0;
-  }
+  placeCommand(FULLON, 0);
   Serial.println("Done with light show");
 }
 
@@ -208,11 +221,13 @@ void microphoneLoop(){
   double volts = (peakToPeak * 3.3)/1024; 
 
   if (volts >= 1.0){
-//    Serial.println("Knock Knock."); 
-//    Serial.print("volts: "); 
-//    Serial.println(volts);
+    if (DEBUG) {
+      Serial.println("Knock Knock."); 
+      Serial.print("volts: "); 
+      Serial.println(volts);
+    }
     if (volts >= 2.1){
-//      Serial.println("That's it!  That's way too loud!"); 
+      if (DEBUG) Serial.println("That's it!  That's way too loud!"); 
       if (lightON == 0){
         placeCommand(ON, 0);   
         lightON = 1;
@@ -257,7 +272,7 @@ void gyroLoop()
       // update LCD once per half-second independent of read rate
       if (sensor.delt_t > 500)
       {
-        if(SerialDebug)
+        if(DEBUG)
         {
           Serial.print("X-gyro rate: "); Serial.print(sensor.gx, 3);
           Serial.print(" degrees/sec ");
